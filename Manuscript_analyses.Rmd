@@ -1,0 +1,2498 @@
+---
+title: "relative_gene_expression"
+author: "andrew_gustin"
+date: "7/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+Begin by loading packages
+```{r}
+# Load Packages
+library(FactoMineR)
+library(ggplot2)
+library(gplots)
+library(ggpubr)
+library(viridis)
+library(reshape2)
+library(FactoMineR)
+library(factoextra)
+library(RColorBrewer)
+library(scales)
+library(compositions)
+library(zCompositions)
+library(dplyr)
+library(tidyverse)
+```
+
+add a figure theme, which will be used throughout
+```{r}
+theme_Publication <- function(base_size=14, base_family = "Arial" ) {
+      library(grid)
+      library(ggthemes)
+      library(RColorBrewer)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(face = "bold",
+                                         size = rel(1.2), hjust = 0.5),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(face = "bold",size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+      
+}
+
+theme_pca <- function() {
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = rel(1.1)),
+    axis.title.y = element_text(angle=90,vjust =2),
+    axis.ticks = element_line(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour="black")
+    
+  )
+}
+
+
+theme_bars_boxes <- function() {
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text = element_text(size= rel(1.1)),
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = rel(1)),
+    axis.title.y = element_text(angle=90,vjust =2),
+    axis.ticks = element_line(),
+    strip.text = element_text(size = rel(1.1),face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(colour="black")
+    
+  )
+}
+```
+
+
+
+Calculate the geometric mean for HK genes
+
+? log everything
+
+? subtract? hkgeo from gene of interest (GOI) -> dont do this
+  *might be better to just make a ratio (> or < 1, but will never be negative)
+
+? compare deltalog across conditions
+
+
+
+
+Load nCounter data & metadata
+```{r}
+#ncounter data is coming from a csv file and will be called "raw"
+raw <- read.csv(file="~/fruitfly/madkv20/full_data_set_analysis/madkv_all.csv",row.names = 1, header=TRUE, check.names=FALSE)
+
+#the experimental metadata is also coming from a csv file and will be called "pData"
+pData <- read.csv(file="~/fruitfly/madkv20/full_data_set_analysis/MADKV20_21_23_meta.csv",header = TRUE,colClasses = "character", na.strings = c(""," ","NA"))
+
+#change all NAs in viral load data to "0"
+pData$viral_load[is.na(pData$viral_load)] <- 0
+
+#create a treatment+timepoint metadata category
+pData$treatment_and_timepoint <- paste(pData$treatment,pData$timepoint,sep = "_")
+
+#create an age-specific treatment+timepoint metadata category
+pData$age_treatment_and_timepoint <- paste(pData$age,pData$treatment,pData$timepoint,sep = "_")
+
+#create a sex-specific treatment+timepoint metadata category
+pData$sex_treatment_and_timepoint <- paste(pData$sex,pData$treatment,pData$timepoint,sep = "_")
+
+#create a df with the class of each gene (endogenous = gene of interest; positive and negative = spik-in controls; Housekeeping = genes predicted to be unimpacted by experimental conditions)
+
+fData <- data.frame(rownames(raw))
+fData$Class <- c("endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","endogenous","positive","positive","positive","positive","positive","positive","negative","negative","negative","negative","negative","negative","negative","negative","Housekeeping","Housekeeping","Housekeeping","Housekeeping","Housekeeping","Housekeeping")
+rownames(fData) <- fData$rownames.raw.
+```
+
+
+Assess how widely the vector (sample) library sizes vary 
+```{r}
+temp <- t(raw) %>% melt
+colnames(temp) <- c("sample_name","gene","raw_counts")
+
+#calculate coefficient of variation for each gene
+temp_CV <- temp %>% dplyr::group_by(sample_name) %>%
+    dplyr::summarise(count_sum = sum(raw_counts))
+```
+The samples range from ~68k to over 800k counts. 
+
+Does this range of values appear to reflect loading/tehcnical differences - or does the vector size appear to reflect some biological measurement?
+
+
+```{r}
+#examine raw counts by building a melted df that contains both pData and fData in addition to raw counts
+melted_raw <- melt(t(raw))
+melted_raw <- left_join(melted_raw,pData,by = c("Var1" = "gale_id"))
+melted_raw <- left_join(melted_raw, fData, by = c("Var2" = "rownames.raw."))
+
+
+ggplot(melted_raw, aes(x = Var1,y = value,fill = Class)) +
+    geom_bar(stat = "identity")+
+    theme_minimal() + scale_fill_manual(values = c("#ff615d","#004c7a","#ffd400","#61c57b"))+
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("a) Total raw counts")
+    
+ggplot(melted_raw, aes(x = Var1,y = log2(value),fill = Class)) +
+    geom_bar(stat = "identity")+
+    theme_minimal() + scale_fill_manual(values = c("#ff615d","#004c7a","#ffd400","#61c57b")) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("b) Log2() raw counts")
+
+ggplot(melted_raw, aes(x = Var1,y = value,fill = Class)) +
+    geom_bar(stat = "identity", position = "fill")+
+    scale_y_continuous(labels = percent_format()) +
+    theme_minimal() + scale_fill_manual(values = c("#ff615d","#004c7a","#ffd400","#61c57b"))+
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("c) Relative raw counts")
+
+
+ggplot(melted_raw, aes(x = Var1,y = value,fill = Class)) +
+    geom_bar(stat = "identity")+
+    theme_minimal() + scale_fill_manual(values = c("#ff615d","#004c7a","#ffd400","#61c57b"))+
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("d) Total raw counts") + facet_wrap(~Class,nrow = 1)
+    
+ggplot(melted_raw, aes(x = Var1,y = log2(value),fill = Class)) +
+    geom_bar(stat = "identity")+
+    theme_minimal() + scale_fill_manual(values = c("#ff615d","#004c7a","#ffd400","#61c57b")) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("e) Log2() raw counts") +
+  facet_wrap(~Class,nrow = 1)
+
+
+```
+
+From these raw data visualization, it appears that samples at 2dpi have higher overal counts, driven by higher levels of detection of a large number of genes of interest (endogenous).
+
+It also seems like there is a large increase (on average) in positivie control counts after the first cartridge.  We can investigate further
+
+```{r}
+ggplot(subset(melted_raw,Class=="positive"), aes(x = Var1,y = value,fill = Var2)) +    
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 15)) + ggtitle("raw positive counts)")
+
+ggplot(subset(melted_raw,Class=="positive"), aes(x = Var1,y = log2(value),fill = Var2)) +    
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 15)) + ggtitle("log2(raw) positive counts)")
+
+ggplot(subset(melted_raw,Class=="positive"), aes(x = Var1,y = value,fill = Var2)) +    
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 15)) + ggtitle("raw positive counts)") + facet_wrap(~Var2,scales = "free_y")
+
+ggplot(subset(melted_raw,Class=="positive"), aes(x = Var1,y = value,fill = Var2)) +
+    geom_bar(stat = "identity", position = "fill")+
+    scale_y_continuous(labels = percent_format()) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 4)) + ggtitle("relative positive counts")
+```
+
+These plots seems to agree with the assessment that the first cartridge had lower counts of positive controls detected; this altered level was not influenced by one probe, but by all proves being detected at lower levels in the first cartridge.  
+
+
+To answer the above question (are the differences in library size technical or biological?), the above analyses suggest the difference in library size is related to the experimental design and probe set, which were poised to induce/measure a large response from a highly non-random set of genes (innate immune focused).  Thus, we count significantly more events from samples 2 days post-infection compared to mock animals, and see that library size progressively shrinks with time, moving toward the mock animals.  
+
+
+
+--------
+
+Original analyses of these data demonstrated that common sequencing-based analysis pipelines introduced artifacts into the data due to their reliance on various normalization techniques whose assumptions are violated by the experimental design/probe set utilized here, explained above.  In short, distribution based normalization methods (UQR, TMM, etc) end up overestimating the counts (in samples with small library sizes) for genes that are actually relatively invariant across all samples (eg, HK genes).  This introduced downstream miscalculations regarding DE genes, with several HK genes and low variability genes (eg,TLR4) being called as significantly downregulated during infection when library sizes were much larger than mock.  
+
+The nanostring-recommended 2-step normalization first utilizes positive controls to remove technical variability, and then using these corrected counts, applies a further housekeeping normalization to the data.  In our hands, this outperforms distribution based methods.  If, however, one were inclined to use downstream sequencing-based approaches (as in Love 2020), the logCPM transformation re-introduces the same effect mentioned above.  This is again directly related to the library size differences.  
+
+Nanostring's free software recommends using counts that have been normalized by their 2-step process and then testing these counts for significant differences across conditions by t test.  This assumes that a) the data are normal, and b)the normalization is sufficiently good that we can "believe" 1 observed count in sample "A" means the same as a count in sample "B".  While we can test for (a) by shapiro test, we know (b) is unlikely because these data, like all sequencing data, are compositional in nature.  Therefore, we have chosen to use an alternate strategy that leverages data within each sample vector as an internal reference, against which we can compare all genes of interst.  
+
+Our tethering approach is quite similar to an additive log ratio approach, which is part of family of log-ratio transformations shown to overcome the compositional nature of sequencing data (and other unrelated studies (geochemistry, mass cytometry - potentially flow data?))
+
+The additive log ratio approach takes the log of a ratio comprised of: counts from each GOI as a numerator and the counts from a chosen reference that can be found in each sample. IN our case, that would look like the following: 
+
+log( GOI counts / Reference gene counts )
+
+Because we have additional information, we choose to combine this line of thinking with a feature of centered-log ratio, specifically, using the geometric mean (GM) of within- sample data.  Here, we select our tethers by calculating which HK genes have the least variability across the data set (lowest Coefficient of variation).  We then calculate the GM of these tethers, which is advantageous to taking the arithmetic mean, because the GM is less sensitive to variations in magnitude (which varies widely in HK gene count measurements).  LIke the ALR approach, we simply divide the counts for each GOI by the within-sample tethers (HK GM), and then take the log value.  I hypothesize this makes our approach more robust to variation in the housekeeping genes by experimental factor (age, tp, etc) because while 1 HK might be related, its unlikely that all would be, (so this protects us against the behavior of only one gene used as a reference while also limiting the impact of taking the geometric mean of the whole data set when library sizes differ for biological reasons)
+
+
+
+
+
+
+
+
+
+Assess HK genes (alongside all genes)
+
+CV = σ / μ   (https://www.statology.org/what-is-a-good-coefficient-of-variation/)
+where:
+    σ: The standard deviation of dataset
+    μ: The mean of dataset
+    
+
+    A CV of 0.5 means the standard deviation is half as large as the mean.
+    A CV of 1 means the standard deviation is equal to the mean.
+    A CV of 1.5 means the standard deviation is 1.5 times larger than the mean.
+
+on raw counts   
+```{r}
+
+all <- t(raw) %>% melt
+colnames(all) <- c("sample_name","gene","raw_counts")
+
+#calculate coefficient of variation for each gene
+all_CV <- all %>% dplyr::group_by(gene) %>%
+    dplyr::summarise(stdev = sd(raw_counts),mean = mean(raw_counts),CV = stdev/mean)
+
+all <- left_join(all,all_CV, by = "gene")
+all <- left_join(all,pData, by = c("sample_name" = "gale_id"))
+all <- left_join(all,fData,by = c("gene" ="rownames.raw."))
+
+#plot CV from most to least 
+ggplot(all,aes(gene,CV,fill = Class)) + 
+  geom_bar(stat='identity') + 
+  aes(x = fct_reorder(gene,-CV)) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 15)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 6)) +
+  ggtitle("Genes ranked by CV of raw counts, most to least")
+
+
+
+#visualize dispersion
+ggplot(all,aes(gene,raw_counts,color = Class)) + 
+  geom_boxplot() +
+  aes(x = fct_reorder(gene,-CV)) + 
+  #facet_grid(~age) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 6)) +
+  ggtitle("Dispersion of raw counts, ranked by CV")
+
+
+```
+
+on log2(raw) counts   
+```{r}
+all <- t(raw) %>% melt
+colnames(all) <- c("sample_name","gene","raw_counts")
+all$log2_raw_counts <- log2(all$raw_counts)
+
+#calculate coefficient of variation for each gene
+all_CV <- all %>% dplyr::group_by(gene) %>%
+    dplyr::summarise(stdev = sd(raw_counts),mean = mean(raw_counts),CV = as.numeric(stdev/mean))
+
+all <- left_join(all,all_CV, by = "gene")
+all <- left_join(all,pData, by = c("sample_name" = "gale_id"))
+all <- left_join(all,fData,by = c("gene" ="rownames.raw."))
+
+#plot CV from most to least 
+ggplot(all,aes(gene,CV,fill = Class)) + 
+  geom_bar(stat='identity') + 
+  aes(x = fct_reorder(gene,-CV)) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 15)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  ggtitle("Genes ranked by CV of log2(raw counts), most to least")
+
+
+
+#visualize dispersion
+ggplot(all,aes(gene,log2_raw_counts,color = Class)) + 
+  geom_boxplot() +
+  aes(x = fct_reorder(gene,-CV)) + 
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1)) +
+  ggtitle("Dispersion of raw log2(counts), ranked by CV")
+
+
+```
+*Several observed endogenous genes had lower coefficients of variation compared to a priori HK genes
+
+*There does not appear to be an obvious relationship between raw counts and variance
+
+
+
+
+
+
+
+
+
+
+______
+
+Choose the genes that will function as a reference population within each samples
+Prioritizing HK genes
+  evaluating based on CV rank and dispersion that appears age dependent
+      e.g. the interquartile range (IQR) for Gapdh and Pgk1 do not all overlap when considering age
+
+```{r}
+# choose reference genes and calculate their geometric mean (will be w/in sample tethers)
+
+
+ref <- raw[c("ABCF1","ACTB","SDHA"),] %>% t() %>% melt() #instead of raw[hk,]
+colnames(ref) <- c("sample_name","gene","raw_counts")
+
+#calculate the geometric mean of the reference genes within each sample (vector)
+ref_geo <- ref %>% dplyr::group_by(sample_name) %>%
+    dplyr::summarise(tether_gene_geo_mean = exp(mean(log(raw_counts))))
+
+#add a log2 column
+#ref_geo$log2_geo <- log2(ref_geo$tether_gene_geo_mean)
+```
+
+
+
+Because CLR/ALR approaches utilize a log transformation of the desired ratios, we need to make sure that there are not zeros in the numerators (GOI), which we know occurs in a small subset of samples.  TO correct for this, we utilize the zCompositions:: package to generate non-zeros while keeping the ratios of all other counts in the sample consistent.  (per the fx description - "This function implements methods for imputing zeros in compositional count data sets based on a Bayesian-multiplicative replacement.")
+
+```{r}
+#account for 0s 
+raw.no0 <- cmultRepl(raw, output = "p-counts")
+
+#make data relative to reference genes (ref object)
+melted_raw <- melt(t(raw.no0))
+colnames(melted_raw) <- c("sample_name","gene","raw_counts")
+ref_relative_data <- left_join(melted_raw, ref_geo, by = "sample_name")
+#ref_relative_data$log_counts <- log2(ref_relative_data$raw_counts)
+ref_relative_data$ratio_goi_to_tether <- ref_relative_data$raw_counts / ref_relative_data$tether_gene_geo_mean
+#ref_relative_data$difference_goi_to_tether <- ref_relative_data$raw_counts - ref_relative_data$tether_gene_geo_mean
+#ref_relative_data$relative_log_counts <- ref_relative_data$log_counts / ref_relative_data$log2_geo
+
+
+#add pData and fData
+ref_relative_data <- left_join(ref_relative_data,pData,by = c("sample_name" = "gale_id"))
+ref_relative_data <- left_join(ref_relative_data, fData, by = c("gene" = "rownames.raw."))
+
+ref_relative_data$age <- factor(ref_relative_data$age,levels = c("10_wk","20_wk","2_yr"))
+ref_relative_data$viral_load <- as.numeric(ref_relative_data$viral_load)
+
+
+#change column that lists mock timepoints as "control" rather than 7dpi
+
+ref_relative_data$timepoint <- ifelse(ref_relative_data$treatment=="mock",yes = "control",no = ref_relative_data$timepoint)
+ref_relative_data$timepoint <- factor(ref_relative_data$timepoint,levels = c("control","2dpi","4dpi","7dpi"))  
+```
+
+
+```{r}
+melted_temp <- melt(t(raw))
+melted_temp$raw <- melted_raw$raw_counts
+
+melted_temp$diff <- melted_temp$raw - melted_temp$value
+```
+
+
+Only 1 GOI (Ifna11) from one sample (Sample 3) was unobserved, and the replacement count = 0.00586
+
+
+
+```{r}
+#ground truth plots examining ratios of GOI to tether at different TP across ages
+
+gene_order <- ref_relative_data %>% group_by(gene) %>% top_n(n = 1,wt = ratio_goi_to_tether) %>% arrange(desc(ratio_goi_to_tether))
+gene_order <- gene_order$gene
+
+temp <- ref_relative_data
+temp$gene <- factor(temp$gene, levels = gene_order)
+
+ref_relative_data_mock_2 <- subset(temp,timepoint=="2dpi"|timepoint=="control")
+ref_relative_data_mock_4 <- subset(temp,timepoint=="4dpi"|timepoint=="control")
+ref_relative_data_mock_7 <- subset(temp,timepoint=="7dpi"|timepoint=="control")
+
+
+
+
+ggplot(ref_relative_data_mock_2,aes(age,ratio_goi_to_tether,fill = treatment)) +facet_wrap(~gene,scales = "free_y",nrow = 6) + geom_boxplot() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) + ggtitle("Day 2 post-infection")
+ggplot(ref_relative_data_mock_4,aes(age,ratio_goi_to_tether,fill = treatment)) +facet_wrap(~gene,scales = "free_y",nrow = 6) + geom_boxplot() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))+ ggtitle("Day 4 post-infection")
+ggplot(ref_relative_data_mock_7,aes(age,ratio_goi_to_tether,fill = treatment)) +facet_wrap(~gene,scales = "free_y",nrow = 6) + geom_boxplot() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))+ ggtitle("Day 7 post-infection")
+```
+
+
+#plot tethered data (ratio of goi:tether)
+```{r}
+#boxplot  - endog only
+ggplot(subset(ref_relative_data,Class=="endogenous"),aes(sample_name,ratio_goi_to_tether))+ theme_minimal()+geom_boxplot(outlier.alpha = 1) +ggtitle("Log2 tethered GOI Counts") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 12)) 
+
+# LOG2 boxplot  - endog only
+ggplot(subset(ref_relative_data,Class=="endogenous"),aes(sample_name,log2(ratio_goi_to_tether)))+ theme_minimal()+geom_boxplot(outlier.alpha = 0) +ggtitle("Log2 tethered GOI Counts") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 12)) 
+
+##lineplot - faceted/class
+ggplot(ref_relative_data,aes(sample_name,log2(ratio_goi_to_tether)))+ theme_minimal() + geom_line(aes(group = gene,color = Class)) +ggtitle("Log2 tethered GOI Counts") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 12)) + facet_wrap(~Class)
+
+##log2 lineplot - faceted/gene
+ggplot(ref_relative_data,aes(sample_name,log2(ratio_goi_to_tether)))+ theme_minimal() + geom_line(aes(group = gene,color = Class)) +ggtitle("Log2 tethered GOI Counts") + theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1,size = 12)) + facet_wrap(~gene)
+```
+
+#compare PCA of CLR, ALR, and our tethered approach (tethered-LR)
+
+```{r}
+ref_relative_data$tethered_LR <- log2(ref_relative_data$ratio_goi_to_tether)
+
+ref_relative_data$log2_raw <- log2(ref_relative_data$raw_counts)
+ref_relative_data$CLR <- as.numeric(clr(ref_relative_data$raw_counts)) #PROBS NOT CORRECT BECAUSE ITS NOT GROUPED AT ALL
+alr_reference <- subset(ref_relative_data,gene == "ACTB")
+alr_reference <- alr_reference[,c(1,3)]
+colnames(alr_reference) <- c("sample_name","alr_reference")
+ref_relative_data<- left_join(ref_relative_data,alr_reference, by = "sample_name")
+ref_relative_data$ALR <-log2(ref_relative_data$raw_counts/ref_relative_data$alr_reference)
+```
+
+```{r}
+ref_relative_data <- ref_relative_data %>% dplyr::group_by(sample_name) %>% mutate(geo_mean = exp(mean(log(raw_counts))))
+ref_relative_data <- ref_relative_data %>% dplyr::group_by(sample_name) %>% mutate(clr_manual = log2(raw_counts/geo_mean))
+```
+
+
+#total counts
+```{r}
+ref_relative_data <- ref_relative_data %>% group_by(sample_name) %>% mutate(raw_total = sum(raw_counts)) %>% dplyr::ungroup()
+
+temp <- ref_relative_data %>% group_by(sample_name) %>% summarize(raw_total = sum(raw_counts))
+pData <- left_join(pData,temp, by = c("gale_id" = "sample_name"))
+```
+
+```{r}
+ggplot(ref_relative_data,aes(log2_raw,CLR)) + geom_point()
+ggplot(ref_relative_data,aes(log2_raw,clr_manual)) + geom_point()
+ggplot(ref_relative_data,aes(CLR,clr_manual)) + geom_point()
+```
+
+
+PCA based on raw counts
+```{r}
+pca_data <- ref_relative_data[,c(1,2,3)]
+pca_data$raw_counts <- log2(pca_data$raw_counts + 0.1)
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+raw <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54,60),  graph = FALSE)
+fviz_screeplot(raw, addlabels = TRUE)
+
+var <- get_pca_var(raw)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(raw, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali") + theme_pca()
+
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 3,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_pca()
+
+
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_pca()
+
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0"))  + theme_pca()
+
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = raw$call$X$raw_total,
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "Timepoint",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis() + theme_pca()
+
+fviz_pca_biplot(raw,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = log2(raw$call$X$viral_load),
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "Viral load",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis() + theme_pca()
+```
+
+#coords
+```{r}
+raw_coords <- data.frame(raw$ind$coord)
+colnames(raw_coords) <- paste("raw",colnames(raw_coords),sep = "_")
+raw_coords$sample_name <- rownames(raw_coords)
+coords_df <- left_join(ref_relative_data,raw_coords,by = "sample_name")
+```
+
+```{r}
+raw_coords_p <- data.frame(raw$ind$coord)
+colnames(raw_coords_p) <- paste("raw",colnames(raw_coords_p),sep = "_")
+temp<- cbind(pca_data,raw_coords_p)
+
+ggplot(temp,aes(raw_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() 
+
+ggplot(temp,aes(raw_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() + facet_wrap(~treatment_and_timepoint,scales = "free_y") +stat_summary()
+
+
+
+sp <- ggscatter(temp, x = "raw_Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = TRUE)
+sp + stat_cor(aes(color = treatment_and_timepoint), label.x = 3) 
+#> `geom_smooth()` using formula 'y ~ x'
+
+
+sp <- ggscatter(temp, x = "raw_Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = FALSE,alpha = 0.7)
+sp + stat_cor(label.y = 0) +facet_wrap(~treatment_and_timepoint,scales = "free",nrow = 1) +theme_pca()+ scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972"))
+```
+
+
+
+
+
+PCA based on tethered counts (non-log ratio)
+```{r}
+pca_data <- ref_relative_data[,c(1,2,5)]
+
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+goi_ratio <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54,60),  graph = FALSE)
+fviz_screeplot(goi_ratio, addlabels = TRUE)
+
+var <- get_pca_var(goi_ratio)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(goi_ratio, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(goi_ratio,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(goi_ratio,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_Publication()
+
+
+fviz_pca_biplot(goi_ratio,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Publication()
+
+fviz_pca_biplot(goi_ratio,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Publication()
+
+fviz_pca_biplot(goi_ratio,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = raw$call$X$raw_total,
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "GOI_ratio",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis()
+
+```
+
+
+
+
+PCA based on tethered-log ratio (log2 of GOI:tether ratio )
+```{r}
+pca_data <- ref_relative_data[,c(1,2,23)]
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+tethered_LR <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54,60),  graph = FALSE)
+fviz_screeplot(tethered_LR, addlabels = TRUE)
+
+var <- get_pca_var(tethered_LR)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(tethered_LR, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 3,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) +theme_pca()
+
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69"))  +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0"))  +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0"))  +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 53,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali")  +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 56,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            col.var = "black",
+            invisible="quali")  +theme_pca()
+
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            col.var = "black",
+            invisible="quali")  +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = tethered_LR$call$X$raw_total,
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "Timepoint",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis() +theme_pca()
+
+fviz_pca_biplot(tethered_LR,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = log2(tethered_LR$call$X$viral_load),
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "viral_load",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis() +theme_pca()
+
+```
+#coords2
+```{r}
+anchored_coords <- data.frame(tethered_LR$ind$coord)
+colnames(anchored_coords) <- paste("anchored",colnames(anchored_coords),sep = "_")
+anchored_coords$sample_name <- rownames(anchored_coords)
+coords_df <- left_join(coords_df,anchored_coords,by = "sample_name")
+```
+
+
+```{r}
+anchored_coords_p <- data.frame(tethered_LR$ind$coord)
+colnames(anchored_coords_p) <- paste("anchored",colnames(anchored_coords_p),sep = "_")
+temp<- cbind(pca_data,anchored_coords_p)
+
+ggplot(temp,aes(anchored_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() 
+
+ggplot(temp,aes(anchored_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() + facet_wrap(~treatment_and_timepoint,scales = "free_y") +stat_summary()
+
+
+
+sp <- ggscatter(temp, x = "anchored_Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = TRUE)
+sp + stat_cor(aes(color = treatment_and_timepoint), label.x = 3) 
+#> `geom_smooth()` using formula 'y ~ x'
+
+
+sp <- ggscatter(temp, x = "anchored_Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = FALSE,alpha = 0.7)
+sp + stat_cor(label.y = 0) +facet_wrap(~treatment_and_timepoint,scales = "free",nrow = 1) +theme_pca()+ scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972"))
+```
+
+
+#PVCA - off the shelf validation of my manual correlations above
+```{r}
+library(pvca)
+library(ExpressionNormalizationWorkflow)
+d <- data.frame(t(pca_data[,1:43]))
+targetfile <- data.frame(pca_data[,45:60])
+targetfile <- targetfile %>% mutate(count_bin = ntile(raw_total,n = 30))
+
+
+inpData <- expSetobj(expression= d,covariates =targetfile)
+cvrts_eff_var <- c("age","sex","treatment_and_timepoint","cage","viral_load","count_bin")
+
+## Set a PVCA Threshold Value between 0 & 1.
+## PVCA Threshold Value is the percentile value of the minimum amount of the variabilities that the selected principal components need to explain, here requiring 75% of the expression variance to be captured by the PCs
+pct_thrsh <- 0.75
+## Perform the PVCA analysis
+#png("1.count_data/1.PVCA.png", width=6, height=5, units="in", res=100)
+par(mar = c(5, 4, 2, 2))
+pvcaObj <- pvcAnaly(inpData, pct_thrsh, cvrts_eff_var)
+#dev.off()
+
+
+
+```
+
+
+```{r}
+pca_data$sample_id <- rownames(pca_data)
+d <- data.frame(t(pca_data[,1:43]))
+targetfile <- data.frame(pca_data[,45:61])
+unique(targetfile$treatment_and_timepoint)
+targetfile <- subset(targetfile,treatment_and_timepoint=="mock_7dpi")
+keep <- unique(targetfile$sample_id)
+d <- d[,keep]
+
+
+targetfile <- targetfile %>% mutate(count_bin = ntile(raw_total,n = 3))
+
+
+inpData <- expSetobj(expression= d,covariates =targetfile)
+cvrts_eff_var <- c("age","sex","count_bin")
+
+## Set a PVCA Threshold Value between 0 & 1.
+## PVCA Threshold Value is the percentile value of the minimum amount of the variabilities that the selected principal components need to explain, here requiring 75% of the expression variance to be captured by the PCs
+pct_thrsh <- 0.6
+## Perform the PVCA analysis
+#png("1.count_data/1.PVCA.png", width=6, height=5, units="in", res=100)
+par(mar = c(5, 4, 2, 2))
+pvcaObj <- pvcAnaly(inpData, pct_thrsh, cvrts_eff_var)
+#dev.off()
+```
+
+
+
+
+
+
+
+PCA based on CLR - by hand
+```{r}
+pca_data <- ref_relative_data[,c(1,2,29)]
+
+
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+Centered_LR <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54,60),  graph = FALSE)
+fviz_screeplot(Centered_LR, addlabels = TRUE)
+
+var <- get_pca_var(Centered_LR)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(Centered_LR, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972"))
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) 
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0"))
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = Centered_LR$call$X$raw_total,
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "CLR",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis()
+
+```
+#coords3
+```{r}
+centered_coords <- data.frame(Centered_LR$ind$coord)
+colnames(centered_coords) <- paste("centered",colnames(centered_coords),sep = "_")
+centered_coords$sample_name <- rownames(centered_coords)
+coords_df <- left_join(coords_df,centered_coords,by = "sample_name")
+```
+
+```{r}
+clr_coords <- data.frame(Centered_LR$ind$coord)
+colnames(clr_coords) <- paste("clr",colnames(clr_coords),sep = "_")
+temp<- cbind(temp,clr_coords)
+
+
+ggplot(temp, aes(anchored_Dim.1,clr_Dim.1)) + geom_point()
+
+
+ggplot(temp,aes(Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() 
+
+ggplot(temp,aes(Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_minimal() + facet_wrap(~treatment_and_timepoint,scales = "free_y")
+
+sp <- ggscatter(temp, x = "Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = TRUE)
+sp + stat_cor(aes(color = treatment_and_timepoint), label.x = 3) 
+
+sp <- ggscatter(temp, x = "Dim.1", y = "raw_total",
+   color = "treatment_and_timepoint",
+   add = "reg.line", conf.int = TRUE)
+sp + stat_cor(label.y = 0) +facet_wrap(~treatment_and_timepoint,scales = "free") +theme_pca()
+```
+
+```{r}
+pca_data$sample_id <- rownames(pca_data)
+d <- data.frame(t(pca_data[,1:43]))
+targetfile <- data.frame(pca_data[,45:61])
+unique(targetfile$treatment_and_timepoint)
+targetfile <- subset(targetfile,treatment_and_timepoint=="mock_7dpi")
+keep <- unique(targetfile$sample_id)
+d <- d[,keep]
+
+
+targetfile <- targetfile %>% mutate(count_bin = ntile(raw_total,n = 3))
+
+
+inpData <- expSetobj(expression= d,covariates =targetfile)
+cvrts_eff_var <- c("age","sex","count_bin")
+
+## Set a PVCA Threshold Value between 0 & 1.
+## PVCA Threshold Value is the percentile value of the minimum amount of the variabilities that the selected principal components need to explain, here requiring 75% of the expression variance to be captured by the PCs
+pct_thrsh <- 0.6
+## Perform the PVCA analysis
+#png("1.count_data/1.PVCA.png", width=6, height=5, units="in", res=100)
+par(mar = c(5, 4, 2, 2))
+pvcaObj <- pvcAnaly(inpData, pct_thrsh, cvrts_eff_var)
+#dev.off()
+```
+
+
+
+
+
+```{r}
+library(pvca)
+library(ExpressionNormalizationWorkflow)
+d <- data.frame(t(pca_data[,1:43]))
+targetfile <- data.frame(pca_data[,45:60])
+targetfile <- targetfile %>% mutate(count_bin = ntile(raw_total,n = 30))
+
+
+inpData <- expSetobj(expression= d,covariates =targetfile)
+cvrts_eff_var <- c("age","sex","timepoint","treatment","cage","viral_load","count_bin")
+
+## Set a PVCA Threshold Value between 0 & 1.
+## PVCA Threshold Value is the percentile value of the minimum amount of the variabilities that the selected principal components need to explain, here requiring 75% of the expression variance to be captured by the PCs
+pct_thrsh <- 0.75
+## Perform the PVCA analysis
+#png("1.count_data/1.PVCA.png", width=6, height=5, units="in", res=100)
+par(mar = c(5, 4, 2, 2))
+pvcaObj <- pvcAnaly(inpData, pct_thrsh, cvrts_eff_var)
+#dev.off()
+```
+
+
+
+#plots compare pca
+```{r}
+coords_df$treatment_and_timepoint <- factor(coords_df$treatment_and_timepoint,levels = c("mock_7dpi","infected_7dpi","infected_4dpi","infected_2dpi"))
+##########
+#raw
+
+ggplot(coords_df,aes(raw_Dim.1,0)) + geom_point(aes(color = treatment_and_timepoint),size = 2,alpha = 0.6) + theme_bars_boxes() + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + scale_y_continuous(limits = c(-0.1,0.1),breaks = c(0)) + ylab(label = "Raw counts")
+
+ggplot(coords_df,aes(raw_Dim.1,0)) + geom_point(aes(color = treatment_and_timepoint),size = 3,alpha = 0.6) + theme_bars_boxes() + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + scale_y_continuous(limits = c(-0.1,0.1),breaks = c(0)) + ylab(label = "Raw counts") + facet_wrap(~treatment_and_timepoint,nrow = 1)
+
+ggplot(coords_df,aes(raw_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3)  + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + ylab(label = "Raw counts") + facet_wrap(~treatment_and_timepoint,nrow = 1) + theme_pca()
+
+
+##########
+#anchored
+
+ggplot(coords_df,aes(anchored_Dim.1,0)) + geom_point(aes(color = treatment_and_timepoint),size = 2,alpha = 0.6) + theme_bars_boxes() + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + scale_y_continuous(limits = c(-0.1,0.1),breaks = c(0)) + ylab(label = "Anchored counts")
+
+ggplot(coords_df,aes(anchored_Dim.1,0)) + geom_point(aes(color = treatment_and_timepoint),size = 3,alpha = 0.6) + theme_bars_boxes() + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + scale_y_continuous(limits = c(-0.1,0.1),breaks = c(0)) + ylab(label = "Anchored counts") + facet_wrap(~treatment_and_timepoint,nrow = 1)
+
+ggplot(coords_df,aes(anchored_Dim.1,raw_total,color = treatment_and_timepoint)) + geom_point(size = 3)  + scale_color_manual(values = c("#8e4972","#004a91","#006d37","#d1af1d")) + ylab(label = "Anchored counts") + facet_wrap(~treatment_and_timepoint,nrow = 1) + theme_pca()
+
+
+
+```
+
+
+
+
+
+
+
+
+PCA based on Additive LR
+```{r}
+pca_data <- ref_relative_data[,c(1,2,26)]
+
+
+
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+Additive_LR <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54,60),  graph = FALSE)
+fviz_screeplot(Additive_LR, addlabels = TRUE)
+
+var <- get_pca_var(Additive_LR)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(Additive_LR, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_Publication()
+
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Publication()
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Publication()
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 1,
+            col.ind = Additive_LR$call$X$raw_total,
+            select.var = list(contrib = 10),
+            repel = TRUE,
+            title = "ALR",
+            invisible="quali")+ scale_shape_manual(values=c(19,19,19,19,19,19,19,19,19,19)) + scale_color_viridis()
+
+
+```
+
+
+```{r}
+res = 144
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+
+#SVG
+svglite("PCA_Timepoint.svg", width = 1080/res, height = 720/res)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "log2-TGC PCA: Timepoint",
+            invisible="quali")  + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_Michael()
+dev.off()
+
+
+svglite("PCA_Age.svg", width = 1080/res, height = 720/res)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "log2-TGC PCA: Age",
+            invisible="quali")  + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Michael()
+dev.off()
+
+svglite("PCA_Sex.svg", width = 1080/res, height = 720/res)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "log2-TGC PCA: Sex",
+            invisible="quali")  + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Michael()
+dev.off()
+
+svglite("PCA_viral_load.svg", width = 1080/res, height = 720/res)
+fviz_pca_biplot(tethered_LR,
+                geom.ind="point",
+                pointshape = 19,
+                pointsize = 5,
+                alpha = 0.6,
+                col.ind = log(tethered_LR$call$X$viral_load),
+                col.var = "red",
+            select.var = list(name = c("IL18","IL1A","MX1","CXCL10","IFNAR1","IFNGR1")),
+                title = "log2-TGC PCA: Viral load (log2)",invisible="quali") + 
+            scale_shape_manual() + scale_color_viridis() +
+                theme_Michael()
+dev.off()
+
+
+
+svglite("Scree_plot_PC1.svg", width = 1080/res, height = 720/res)
+fviz_contrib(tethered_LR, choice = "var", axes = 1, top = 30)
+dev.off()
+
+svglite("Scree_plot_PC2.svg", width = 1080/res, height = 720/res)
+fviz_contrib(tethered_LR, choice = "var", axes = 2, top = 10)
+dev.off()
+
+svglite("Scree_plot_PC3.svg", width = 1080/res, height = 720/res)
+fviz_contrib(tethered_LR, choice = "var", axes = 3, top = 10)
+dev.off()
+
+```
+
+
+update
+```{r}
+
+
+
+#PDF
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Timepoint.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) +  theme_Michael() + theme(legend.position = "none")
+dev.off()
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Timepoint_w_legend.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) +  theme_Michael() 
+dev.off()
+
+
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Age.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Michael()+ theme(legend.position = "none")
+dev.off()
+
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Age_w_legend.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Michael()
+dev.off()
+
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Sex.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Michael()+ theme(legend.position = "none")
+
+dev.off()
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/PCA_Sex_w_legend.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_ind(tethered_LR,
+            geom="point",  pointshape = 19,pointsize = 8,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            invisible="quali")  + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Michael()
+dev.off()
+
+
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/Viral_Load.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_biplot(tethered_LR,
+                geom.ind="point",
+                pointshape = 19,
+                pointsize = 8,
+                alpha = 0.6,
+                col.ind = log(tethered_LR$call$X$viral_load),
+                col.var = "red",
+            select.var = list(name = c("IL18","IL1A","MX1","CXCL10","IFNAR1","IFNGR1")),
+                title = "log2-TGC PCA: Viral load (log2)",invisible="quali") + 
+            scale_shape_manual() + scale_color_viridis() +
+                theme_Michael()+ theme(legend.position = "none")
+dev.off()
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/Viral_Load_w_legend.jpeg", width = 12.8,height = 6,units = "in",res = 600)
+fviz_pca_biplot(tethered_LR,
+                geom.ind="point",
+                pointshape = 19,
+                pointsize = 8,
+                alpha = 0.6,
+                col.ind = log(tethered_LR$call$X$viral_load),
+                col.var = "red",
+            select.var = list(name = c("IL18","IL1A","MX1","CXCL10","IFNAR1","IFNGR1")),
+                title = "log2-TGC PCA: Viral load (log2)",invisible="quali") + 
+            scale_shape_manual() + scale_color_viridis() +
+                theme_Michael()
+dev.off()
+
+
+
+
+
+```
+
+
+
+PCA based on tethered counts (non-log ratio)
+```{r}
+pca_data <- ref_relative_data[,c(1,2,24)]
+pca_data$ratio_goi_to_tether <- pca_data$ratio_goi_to_tether
+
+
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+Centered_LR <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54),  graph = FALSE)
+fviz_screeplot(Centered_LR, addlabels = TRUE)
+
+var <- get_pca_var(Centered_LR)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(Centered_LR, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_Publication()
+
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Publication()
+
+fviz_pca_biplot(Centered_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Publication()
+
+```
+
+
+
+
+PCA based on tethered counts (non-log ratio)
+```{r}
+pca_data <- ref_relative_data[,c(1,2,26)]
+pca_data$ratio_goi_to_tether <- pca_data$ratio_goi_to_tether
+
+
+pca_data <- dcast(data = pca_data,formula = sample_name ~ gene )
+pca_data <- pca_data[,1:44]
+pca_data <- left_join(pca_data, pData, by = c("sample_name" = "gale_id"))
+rownames(pca_data) <- pca_data$sample_name
+pca_data <- pca_data[,2:ncol(pca_data)]
+pca_data$viral_load <- as.numeric(pca_data$viral_load)
+pca_data$age <- factor(pca_data$age,levels = c("10_wk","20_wk","2_yr"))
+
+
+Additive_LR <- PCA(pca_data,quali.sup = c(44:53,55:59),quanti.sup = c(54),  graph = FALSE)
+fviz_screeplot(Additive_LR, addlabels = TRUE)
+
+var <- get_pca_var(Additive_LR)
+
+# Contribution of variables
+head(var$contrib)
+
+for (i in 1:5) {
+print(fviz_contrib(Additive_LR, choice = "var", axes = i, top = 10))  
+}
+
+
+#basic PCA, unlabeled
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 10),
+            invisible="quali")
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 57,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19,19)) + scale_color_manual(values = c("#d1af1d","#006d37","#004a91","#8e4972")) + theme_Publication()
+
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 45,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19,19)) + scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) + theme_Publication()
+
+fviz_pca_biplot(Additive_LR,
+            geom="point",  pointsize = 5,alpha = 0.6, habillage = 46,
+            repel = TRUE,
+            title = "All samples",
+            select.var = list(contrib = 5),
+            invisible="quali") + scale_shape_manual(values=c(19,19)) + scale_color_manual(values = c("#ff5a4d","#007fc0")) + theme_Publication()
+
+```
+
+```{r}
+num_time <- ref_relative_data
+num_time$timepoint <- gsub("dpi","",num_time$timepoint)
+num_time$timepoint <- gsub("control",0,num_time$timepoint)
+num_time$timepoint <- as.numeric(num_time$timepoint)
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+#SVG
+
+
+
+
+
+  
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")  
+for (i in unique(num_time$gene)) {
+jpeg(paste(i,"Tethered_Counts_Line_Plots_All_TP.jpeg",sep = "_"), width = 6*1.875,height = 6*1,units = "in",res = 600)
+print(
+  ggplot(subset(num_time,gene==i),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.3,size = 2) + geom_smooth(alpha = 0.15) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(i) + theme_Michael() +ylab("Tethered Counts") +xlab("Timepoint")
+)
+dev.off()
+}
+
+
+
+
+
+
+
+jpeg(filename = "./files_for_manuscript/Figure_dump_2/TGC_over_time.jpeg", width = 8,height = 10,units = "in",res = 600)
+  ggplot(num_time,aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.3,size = 1) + geom_smooth(alpha = 0.15) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle("TGC over time") +ylab("Tethered Counts") +xlab("Timepoint") + facet_wrap(~gene,ncol = 6,scales = "free_y") +scale_x_continuous(breaks = c(0,2,4,7))
+  dev.off()
+
+
+
+
+
+
+
+
+
+```
+
+
+Having looked at these by eye - it really seems like our approach gives the "tightest" clustering while also reflecting the biology we infer from the boxplots and lineplots of individual GOI across age groups. And, as mentioned above, there are protections built-in to using multiple genes to tether the sample, as opposed to a single gene (ALR), that also avoid pitfalls of using the whole data set (CLR)  
+
+
+
+If we want to compare tethered gene counts (TGC) directly across groups, we can test the genes a number of ways:
+
+1) assume no normality and perform pairwise wilcox tests (equivalent to the Mann-Whitney test) 
+From the fx: "In this case, the null hypothesis is that the distributions of x and y differ by a location shift of mu and the alternative is that they differ by some other location shift.
+
+2) test for normality, and if True, perform two-way anova to test for significant differnces amongst the ages/timepoints and then perform a tukeys post hoc procedure to determine the magnitude of difference for each gene in each pairwise condition. will provide confidence intervals and adjusted p values as well.  
+
+From "What is the proper way to apply the multiple comparison test?" 10.4097/kja.d.18.00242, 2018:
+
+"[Tukey] uses pairwise post-hoc testing to determine whether there is a difference between the mean of all possible pairs using a studentized range distribution. This method tests every possible pair of all groups. Initially, the Tukey test was called the ‘Honestly significant difference’ test, or simply the ‘T test,’4) because this method was based on the t-distribution. It is noted that the Tukey test is based on the same sample counts between groups (balanced data) as ANOVA. Subsequently, Kramer modified this method to apply it on unbalanced data, and it became known as the Tukey-Kramer test. This method uses the harmonic mean of the cell size of the two comparisons. The statistical assumptions of ANOVA should be applied to the Tukey method, as well...
+
+When used as a post hoc test after ANOVA, the Bonferroni method uses thresholds based on the t-distribution; the Bonferroni method is more rigorous than the Tukey test, which tolerates type I errors, and more generous than the very conservative Scheffé’s method...
+
+
+ANOVA is performed only in cases where the assumption of equivalence of variance holds. However, it is a robust statistic that can be used even when there is a de- viation from the equivalence assumption. In such cases, the Games-Howell, Tamhane’s T2, Dunnett’s T3, and Dunnett’s C tests can be applied.
+
+The Games-Howell method is an improved version of the Tukey-Kramer method and is applicable in cases where the equivalence of variance assumption is violated. It is a t-test using Welch’s degree of freedom. This method uses a strategy for controlling the type I error for the entire comparison and is known to maintain the preset significance level even when the size of the sample is different. However, the smaller the number of samples in each group, the it is more tolerant the type I error control. Thus, this method can be applied when the number of samples is six or more."
+
+
+
+
+
+#Check genes for normal distributions to determine which statistical tests are valid
+
+Long story short, if you group the genes' info by age and timepoint and then apply modest p value corrections, they're virtually all normal.  if you do just age, or just timepoint, then the data aren't normal (but this is expected across tx groups where the means are hypothesized to be distinct (resulting in multi-modal distributions when the null is rejected))
+```{r}
+shapiro_all_tp <- ref_relative_data
+shapiro_all_tp <- shapiro_all_tp[,c(2,5,7,9)]
+shapiro_all_tp <- shapiro_all_tp %>%  
+  nest(data = -c(gene,age,timepoint)) %>% 
+  mutate(
+    shapiro = map(.x = data ,.f = ~shapiro.test(.x$ratio_goi_to_tether)), 
+    glanced = map(shapiro, broom::glance), 
+    tidied = map(shapiro, broom::tidy) 
+  ) %>% 
+  unnest(glanced) %>% 
+  select(gene,age,timepoint, W = statistic, p.value) 
+
+#would expect ~ 30 significant values by chance with this many calcs so need a moderate correction (bonferroni probs too stringent)
+shapiro_all_tp$bonferroni <-  stats::p.adjust(p = shapiro_all_tp$p.value,method = "bonferroni" )
+shapiro_all_tp$bh <-  stats::p.adjust(p = shapiro_all_tp$p.value,method = "BH" )
+
+ggplot(subset(shapiro_all_tp,p.value <0.05),aes(gene, p.value,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+ggplot(subset(shapiro_all_tp,bh <0.05),aes(gene, bh,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+ggplot(subset(shapiro_all_tp,bonferroni <0.05),aes(gene, bonferroni,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+```
+
+can do two-way anova with greenhouse-geiser correction for non-sphericity 
+
+The two-way ANOVA will test whether the independent variables (age and timepoint) have an effect on the dependent variable (ratio of : GOI/tether)
+
+#Running it for one gene
+```{r}
+interaction <- aov(ratio_goi_to_tether ~ age * timepoint, data = subset(ref_relative_data,gene=="TLR7"))
+#summary_aov <- summary(interaction)
+#tukey <- TukeyHSD(interaction)
+tukey <- data.frame(TukeyHSD(interaction)$`age:timepoint` )
+
+plot(TukeyHSD(interaction,"age"))
+```
+
+
+This will run a two-way anova on every gene's tethered gene counts (TGC) and then use that data to perform a Tukey post hoc procedure to calculate the significance and magnitude of difference.  
+It will create 66 comparisons per gene, which is all pairwise comparisons across age(n = 3) and timepoint (n = 4).  We probably care most about 21 of these comparisons, but for now we have all the information.  
+The last step would be to add a greenhouse-geiser correction for non-sphericity
+```{r}
+two_way_on_TGCs <- ref_relative_data
+two_way_on_TGCs <- two_way_on_TGCs[,c(2,5,7,9)]
+two_way_on_TGCs <-two_way_on_TGCs %>%  
+  nest(data = -c(gene)) %>% 
+  mutate(
+    two_way = map(.x = data ,.f = ~ aov(.x$ratio_goi_to_tether ~ .x$age * .x$timepoint)), #should we make this so that tukey's is only performed where there are significant anova hits?
+    #also, is this testing for within subject rather than across subjects?  (ie, testing for repeated measures even though we dont have those?)
+    tukey = map(.x = two_way, .f = ~data.frame(TukeyHSD(.x)$`.x$age:.x$timepoint`))
+)
+
+
+
+
+temp <- two_way_on_TGCs
+temp$gene <- as.character(temp$gene)
+
+for (i in rownames(temp)) {
+  temp[i, 4][[1]][[1]]$gene <- rep(as.character(temp[i,"gene"]),66)
+}
+
+for (i in rownames(temp)) {
+  temp[i, 4][[1]][[1]]$comparisons <- rownames(temp[i, 4][[1]][[1]])
+}
+
+
+temp <- data.table::rbindlist(temp$tukey)
+
+
+comps <- c("10_wk:2dpi-10_wk:control","10_wk:4dpi-10_wk:control","10_wk:7dpi-10_wk:control","20_wk:2dpi-20_wk:control","20_wk:4dpi-20_wk:control","20_wk:7dpi-20_wk:control","2_yr:2dpi-2_yr:control","2_yr:4dpi-2_yr:control","2_yr:7dpi-2_yr:control","20_wk:control-10_wk:control","2_yr:control-10_wk:control","2_yr:control-20_wk:control","20_wk:2dpi-10_wk:2dpi","2_yr:2dpi-10_wk:2dpi","2_yr:2dpi-20_wk:2dpi","20_wk:4dpi-10_wk:4dpi","2_yr:4dpi-10_wk:4dpi","2_yr:4dpi-20_wk:4dpi","20_wk:7dpi-10_wk:7dpi","2_yr:7dpi-10_wk:7dpi","2_yr:7dpi-20_wk:7dpi")
+
+
+temp <- subset(temp,comparisons %in% comps)
+temp$comparisons <- factor(temp$comparisons,levels = comps)
+
+temp <- temp[,c(5,6,1,4,2,3)]
+
+write.csv(temp,"./files_for_manuscript/tethered_data_tukeys_comparisons.csv",row.names = FALSE,quote = FALSE)
+
+```
+
+
+```{r}
+
+endog <- subset(fData, Class=="endogenous")
+endog <- as.character(endog$rownames.raw.)
+tmp  <- subset(temp,gene %in% endog)
+tmp$gene <- factor(tmp$gene,levels = rev(gene_order))
+
+
+comps <- c("10_wk:2dpi-10_wk:control","10_wk:4dpi-10_wk:control","10_wk:7dpi-10_wk:control","20_wk:2dpi-20_wk:control","20_wk:4dpi-20_wk:control","20_wk:7dpi-20_wk:control","2_yr:2dpi-2_yr:control","2_yr:4dpi-2_yr:control","2_yr:7dpi-2_yr:control","20_wk:control-10_wk:control","2_yr:control-10_wk:control","2_yr:control-20_wk:control","20_wk:2dpi-10_wk:2dpi","2_yr:2dpi-10_wk:2dpi","2_yr:2dpi-20_wk:2dpi","20_wk:4dpi-10_wk:4dpi","2_yr:4dpi-10_wk:4dpi","2_yr:4dpi-20_wk:4dpi","20_wk:7dpi-10_wk:7dpi","2_yr:7dpi-10_wk:7dpi","2_yr:7dpi-20_wk:7dpi")
+
+
+tmp <- subset(tmp,comparisons %in% comps)
+tmp$comparisons <- factor(tmp$comparisons,levels = comps)
+
+
+tmp$new <- ifelse(tmp$p.adj < 0.05 & tmp$diff >0, "pos",0)
+tmp$new <- ifelse(tmp$p.adj < 0.05 & tmp$diff <0, "neg",tmp$new)
+unique(tmp$new)
+
+ggplot(tmp, aes(comparisons,gene,fill = new)) +
+  geom_tile(colour="white", size=1) +
+  scale_fill_manual(values= c("#e0e3d3","#1f5475","#ff2126")) +
+  labs(x="", y="")  +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+library(svglite)
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+res = 72
+svglite("Tethered_gene_counts_tukeys_heatmap_sig_differences.svg", width = 1080/res, height = 720/res)
+ggplot(tmp, aes(comparisons,gene,fill = new)) +
+  geom_tile(colour="white", size=1) +
+  scale_fill_manual(values= c("#e0e3d3","#1f5475","#ff2126")) +
+  labs(x="", y="")  +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) + ggtitle("Tethered_gene_counts_tukeys_heatmap_sig_differences")
+dev.off()
+
+
+
+
+
+
+```
+```{r}
+source(file = "~/2022_malaria_16S_manuzak/heatmap2.F.R")
+library(dynamicTreeCut)
+
+dendo_HM <- tmp[,c(1,2,7)]
+dendo_HM$new <- gsub("pos",1,dendo_HM$new)
+dendo_HM$new <- gsub("neg",-1,dendo_HM$new)
+dendo_HM$new <- gsub("0",0.01,dendo_HM$new)
+dendo_HM$new <- as.numeric(dendo_HM$new)
+
+dendo_HM <- reshape2::dcast(data = dendo_HM,formula = gene ~ comparisons,value.var = "new")
+
+rownames(dendo_HM) <- dendo_HM$gene
+dendo_HM <- dendo_HM[,-1]
+
+get_order <- heatmap.F.4(dataM = as.matrix(dendo_HM),margins = c(10,10),distmethod = "euclidean")   #have to run in console to get it to work because R
+
+ordered_genes <- data.frame(get_order$modules)
+ordered_genes$gene_order <- rownames(ordered_genes)
+
+
+tmp$gene <- factor(tmp$gene, levels = ordered_genes$gene_order)
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+#SVG
+res = 72
+svglite("Heatmap_clustered_sig_TGC_differences.svg", width = 1080/res, height = 720/res)
+ggplot(tmp, aes(comparisons,gene,fill = new)) +
+  geom_tile(colour="white", size=1) +
+  scale_fill_manual(values= c("#e0e3d3","#1f5475","#ff2126")) +
+  labs(x="", y="")  +
+  theme_Michael() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) + ggtitle("Significant TGC differences, using Tukeys adjusted P value")
+dev.off()
+
+
+
+```
+
+
+
+We now have Tukey-adjusted P values for all pairwise comparisons. While we werent concerned about imbalanced sample sizes due to experimental design, we still have not assessed for sphericity and may require correction.
+***CHECK WITH STATS
+
+
+
+To now investigate the hypothesis that age impacts the magnitude of response, we need to assess the experimental data in the context of their baseline levels.  To do so, we create another ratio, this time to measure fold change over mock/baseline.  
+
+To calculate the ratio, we take the TLR-adjusted data (TGC: tethered gene counts) for every gene and divide it by the average TGC for the same gene in the mock samples.  This allows us to have a value for each sample from the infected groups and thus compare the magnitude of induction of each gene across age groups.  
+
+
+
+
+***Run again to address the change in each sample RELATIVE TO its within-age-group-MOCK***
+
+create gene "feature data" that can be used to evaluate age specific changes during infection
+
+after attempting to use the Tethered log ratio data to assess fold change between infected and mock samples, it became apparent that because  the log2() TGC, when ratios < 1, leads to negative numbers and renders fold changes uninterpretable 
+
+therefore, to compare samples against their age-matched baseline, we will compare the GOI's TGC to the average of its age-matched controls.  we will then calculate a fold change ratio by dividing the infected by mock.   
+
+ratio values <1 will yield a negative when log2() transformed, and this will need to be considered
+
+```{r}
+#just mock
+mocks <- subset(ref_relative_data,treatment_and_timepoint=="mock_7dpi") 
+ten <- subset(mocks,age=="10_wk")
+twenty <- subset(mocks,age=="20_wk")
+twoyear <- subset(mocks,age=="2_yr")
+
+
+mock_ten_sum <- ten %>% dplyr::group_by(gene) %>% dplyr::summarise(ten_wk_mock_mean_TGC = mean(ratio_goi_to_tether))
+mock_twenty_sum <- twenty %>% dplyr::group_by(gene) %>% dplyr::summarise(twenty_wk_mock_mean_TGC = mean(ratio_goi_to_tether))
+mock_twoyear_sum <- twoyear %>% dplyr::group_by(gene) %>% dplyr::summarise(two_yr_mock_mean_TGC = mean(ratio_goi_to_tether))
+
+
+mock_sum <- left_join(mock_ten_sum,mock_twenty_sum,by = "gene")
+mock_sum <- left_join(mock_sum,mock_twoyear_sum,by = "gene")
+```
+
+
+
+
+NEED TO FIGURE OUT IF WE'RE MAKING FC ratio correctly - ie, for: -1 < n < 1
+
+
+
+
+
+
+
+
+
+
+
+#add the mock data to ref_relative_data and calculate ratios
+
+
+
+```{r}
+
+temp <- left_join(ref_relative_data,mock_sum,by = "gene")
+
+ten <- subset(temp,age=="10_wk")
+twenty <- subset(temp,age=="20_wk")
+twoyear <- subset(temp,age=="2_yr")
+
+ten$fc_ratio <- ten$ratio_goi_to_tether / ten$ten_wk_mock_mean_TGC
+twenty$fc_ratio <- twenty$ratio_goi_to_tether / twenty$twenty_wk_mock_mean_TGC
+twoyear$fc_ratio <- twoyear$ratio_goi_to_tether / twoyear$two_yr_mock_mean_TGC
+
+ref_relative_data<- rbind(ten,twenty,twoyear)
+
+ref_relative_data$log2fc <- log2(ref_relative_data$fc_ratio)
+```
+
+
+
+
+
+shapiro test on log2 fc ratios
+```{r}
+shapiro_fc_ratio <- ref_relative_data
+shapiro_fc_ratio <- shapiro_fc_ratio[,c(2,7,9,31)]
+shapiro_fc_ratio <- shapiro_fc_ratio %>%  
+  nest(data = -c(gene,age,timepoint)) %>% 
+  mutate(
+    shapiro = map(.x = data ,.f = ~shapiro.test(.x$log2fc)), 
+    glanced = map(shapiro, broom::glance), 
+    tidied = map(shapiro, broom::tidy) 
+  ) %>% 
+  unnest(glanced) %>% 
+  select(gene,age,timepoint, W = statistic, p.value) 
+
+#would expect ~ 30 significant values by chance with this many calcs so need a moderate correction (bonferroni probs too stringent)
+shapiro_fc_ratio$bonferroni <-  stats::p.adjust(p = shapiro_fc_ratio$p.value,method = "bonferroni" )
+shapiro_fc_ratio$bh <-  stats::p.adjust(p = shapiro_fc_ratio$p.value,method = "BH" )
+
+ggplot(subset(shapiro_fc_ratio,p.value <0.05),aes(gene, p.value,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+ggplot(subset(shapiro_fc_ratio,bh <0.05),aes(gene, bh,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+ggplot(subset(shapiro_fc_ratio,bonferroni <0.05),aes(gene, bonferroni,color = age,shape = timepoint)) + geom_point(size = 3)+ theme_minimal() + theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+```
+
+
+
+
+
+
+
+
+
+```{r}
+two_way_tukey <- ref_relative_data
+two_way_tukey <- two_way_tukey[,c(2,7,9,31)]
+two_way_tukey <-two_way_tukey %>%  
+  nest(data = -c(gene)) %>% 
+  mutate(
+    two_way = map(.x = data ,.f = ~ aov(.x$log2fc ~ .x$age * .x$timepoint)), #should we make this so that tukey's is only performed where there are significant anova hits?
+    #also, is this testing for within subject rather than across subjects?  (ie, testing for repeated measures even though we dont have those?)
+    tukey = map(.x = two_way, .f = ~data.frame(TukeyHSD(.x)$`.x$age:.x$timepoint`))
+) 
+
+#%>% 
+#unnest(tukey)
+
+```
+
+```{r}
+temp <- two_way_tukey
+temp$gene <- as.character(temp$gene)
+
+for (i in rownames(temp)) {
+  temp[i, 4][[1]][[1]]$gene <- rep(as.character(temp[i,"gene"]),66)
+}
+
+for (i in rownames(temp)) {
+  temp[i, 4][[1]][[1]]$comparisons <- rownames(temp[i, 4][[1]][[1]])
+}
+
+temp <- data.table::rbindlist(temp$tukey)
+
+
+comps <- c("10_wk:2dpi-10_wk:control","10_wk:4dpi-10_wk:control","10_wk:7dpi-10_wk:control","20_wk:2dpi-20_wk:control","20_wk:4dpi-20_wk:control","20_wk:7dpi-20_wk:control","2_yr:2dpi-2_yr:control","2_yr:4dpi-2_yr:control","2_yr:7dpi-2_yr:control","20_wk:control-10_wk:control","2_yr:control-10_wk:control","2_yr:control-20_wk:control","20_wk:2dpi-10_wk:2dpi","2_yr:2dpi-10_wk:2dpi","2_yr:2dpi-20_wk:2dpi","20_wk:4dpi-10_wk:4dpi","2_yr:4dpi-10_wk:4dpi","2_yr:4dpi-20_wk:4dpi","20_wk:7dpi-10_wk:7dpi","2_yr:7dpi-10_wk:7dpi","2_yr:7dpi-20_wk:7dpi")
+
+
+temp <- subset(temp,comparisons %in% comps)
+temp$comparisons <- factor(temp$comparisons,levels = comps)
+
+
+temp <- temp[,c(5,6,1,4,2,3)]
+
+write.csv(temp,"./files_for_manuscript/log2fc_ratios_tukeys_comparisons.csv",row.names = FALSE,quote = FALSE)
+```
+
+
+```{r}
+#temp$p.adj <- ifelse(temp$p.adj <0.05, 1,0)
+
+endog <- subset(fData, Class=="endogenous")
+endog <- as.character(endog$rownames.raw.)
+tmp  <- subset(temp,gene %in% endog)
+tmp$gene <- factor(tmp$gene,levels = rev(gene_order))
+
+
+comps <- c("10_wk:2dpi-10_wk:control","10_wk:4dpi-10_wk:control","10_wk:7dpi-10_wk:control","20_wk:2dpi-20_wk:control","20_wk:4dpi-20_wk:control","20_wk:7dpi-20_wk:control","2_yr:2dpi-2_yr:control","2_yr:4dpi-2_yr:control","2_yr:7dpi-2_yr:control","20_wk:control-10_wk:control","2_yr:control-10_wk:control","2_yr:control-20_wk:control","20_wk:2dpi-10_wk:2dpi","2_yr:2dpi-10_wk:2dpi","2_yr:2dpi-20_wk:2dpi","20_wk:4dpi-10_wk:4dpi","2_yr:4dpi-10_wk:4dpi","2_yr:4dpi-20_wk:4dpi","20_wk:7dpi-10_wk:7dpi","2_yr:7dpi-10_wk:7dpi","2_yr:7dpi-20_wk:7dpi")
+
+
+tmp <- subset(tmp,comparisons %in% comps)
+tmp$comparisons <- factor(tmp$comparisons,levels = comps)
+
+
+tmp$new <- ifelse(tmp$p.adj < 0.05 & tmp$diff >0, "pos",0)
+tmp$new <- ifelse(tmp$p.adj < 0.05 & tmp$diff <0, "neg",tmp$new)
+unique(tmp$new)
+
+ggplot(tmp, aes(comparisons,gene,fill = new)) +
+  geom_tile(colour="white", size=1) +
+  scale_fill_manual(values= c("#e0e3d3","#1f5475","#ff2126")) +
+  labs(x="", y="")  +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15))
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+res = 72
+svglite("log2fc_tukeys_heatmap_sig_differences.svg", width = 1080/res, height = 720/res)
+ggplot(tmp, aes(comparisons,gene,fill = new)) +
+  geom_tile(colour="white", size=1) +
+  scale_fill_manual(values= c("#e0e3d3","#1f5475","#ff2126")) +
+  labs(x="", y="")  +
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) + ggtitle("log2fc_tukeys_heatmap_sig_differences")
+dev.off()
+
+
+
+```
+
+
+
+
+
+
+```{r}
+theme_Michael <- function(base_size=14, base_family = "Arial" ) {
+      library(grid)
+      library(ggthemes)
+      library(RColorBrewer)
+      (theme_foundation(base_size=base_size, base_family=base_family)
+       + theme(plot.title = element_text(size = rel(1.2), hjust = 0),
+               text = element_text(),
+               panel.background = element_rect(colour = NA),
+               plot.background = element_rect(colour = NA),
+               panel.border = element_rect(colour = NA),
+               axis.title = element_text(size = rel(1)),
+               axis.title.y = element_text(angle=90,vjust =2),
+               axis.title.x = element_text(vjust = -0.2),
+               axis.text = element_text(), 
+               axis.line = element_line(colour="black"),
+               axis.ticks = element_line(),
+               panel.grid.major = element_line(colour="#f0f0f0"),
+               panel.grid.minor = element_blank(),
+               legend.key = element_rect(colour = NA),
+               legend.title = element_text(face="italic"),
+               plot.margin=unit(c(10,5,5,5),"mm"),
+               strip.background=element_rect(colour="#f0f0f0",fill="#f0f0f0"),
+               strip.text = element_text(face="bold")
+          ))
+      
+}
+```
+
+```{r}
+
+
+num_time <- ref_relative_data
+num_time$timepoint <- gsub("dpi","",num_time$timepoint)
+num_time$timepoint <- gsub("control",0,num_time$timepoint)
+num_time$timepoint <- as.numeric(num_time$timepoint)
+
+
+GOI <- c("CCL12","CXCL10","Gm14446","IFIT2","IFITM1","IFNB1","IL1B","IL6","IL18","IRF5","IRF7","NLRP3","RSAD2","TLR4","TNFRSF1B","IFNAR1")
+
+for (i in GOI) {
+  print(ggplot(subset(num_time,gene==i),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.3,size = 2) + geom_smooth(alpha = 0.15) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(i) + theme_Michael() +ylab("Tethered Counts") +xlab("Timepoint")
+    
+  )
+}
+
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+#SVG
+for (i in unique(num_time$gene)) {
+svglite(paste(i,"Tethered_Counts_Line_Plots_All_TP.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(
+  ggplot(subset(num_time,gene==i),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.3,size = 2) + geom_smooth(alpha = 0.15) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(i) + theme_Michael() +ylab("Tethered Counts") +xlab("Timepoint")
+)
+dev.off()
+}
+```
+
+```{R}
+ggplot(subset(num_time,gene=="CXCL10"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","CXCL10",sep = " "))
+
+
+
+
+ggplot(subset(num_time,gene=="CXCL10"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","CXCL10",sep = " "))
+
+
+ggplot(subset(num_time,gene=="IL18"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IL18",sep = " "))
+
+
+ggplot(subset(num_time,gene=="IFIT2"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IFIT2",sep = " "))
+
+ggplot(subset(num_time,gene=="IFITM1"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IFITM1",sep = " "))
+
+ggplot(subset(num_time,gene=="IFNB1"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IFNB1",sep = " "))
+
+ggplot(subset(num_time,gene=="IL1B"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IL1B",sep = " "))
+
+ggplot(subset(num_time,gene=="IL6"),aes(timepoint,ratio_goi_to_tether,group = age,color = age)) + 
+  geom_point(alpha = 0.2) + geom_smooth(alpha = 0.2) +
+  theme_minimal() + 
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts","IL6",sep = " "))
+```
+
+```{r}
+
+
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#PDF
+pdf("./all_tp_ratios_wilcox_stats_shown.pdf",width = 6,5,onefile = T)
+for (i in unique(ref_relative_data$gene)) {
+print(ggplot(subset(ref_relative_data,gene==i),aes(age,ratio_goi_to_tether,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.15,size = 2, alpha = 0.5) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  stat_compare_means(method = "wilcox.test",comparisons = list(c("10_wk","20_wk"),c("10_wk","2_yr"),c("20_wk","2_yr")),tip.length = 0) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts",i,sep = " "))) 
+}
+dev.off()
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+for (i in unique(ref_relative_data$gene)) {
+svglite(paste(i,"all_tp_ratios_wilcox_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(ref_relative_data,gene==i),aes(age,ratio_goi_to_tether,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.15,size = 2, alpha = 0.5) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  stat_compare_means(method = "wilcox.test",comparisons = list(c("10_wk","20_wk"),c("10_wk","2_yr"),c("20_wk","2_yr")),tip.length = 0) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts",i,sep = " ")))
+dev.off()
+}
+```
+
+```{r}
+pdf("./all_tp_ratios_NO_stats_shown.pdf",width = 6,5,onefile = T)
+for (i in unique(ref_relative_data$gene)) {
+print(ggplot(subset(ref_relative_data,gene==i),aes(age,ratio_goi_to_tether,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.15,size = 2, alpha = 0.5) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts",i,sep = " "))) 
+}
+dev.off()
+```
+
+```{r}
+library(svglite)
+library(ggplot2)
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+
+# SVG sizes are in inches, not pixels
+res <- 144
+
+for (i in unique(ref_relative_data$gene)) {
+svglite(paste(i,"all_tp_ratios_NO_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(ref_relative_data,gene==i),aes(age,ratio_goi_to_tether,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.15,size = 2, alpha = 0.5) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 12)) +
+  ggtitle(paste("tethered Counts",i,sep = " ")))
+dev.off()
+}
+
+
+```
+
+
+
+
+
+#just baseline - stats
+```{r}
+mock <- subset(ref_relative_data,treatment=="mock")
+
+
+jpeg("baseline_comps_w_stats.jpeg",12,8,units = "in",res = 700)
+ggplot(subset(mock,Class=="endogenous"),aes(age,ratio_goi_to_tether,fill = age)) +
+          geom_boxplot(outlier.alpha = 0) +
+          geom_jitter(width = 0.1,height = 0,alpha = 0.3,size = 1) +
+          stat_compare_means(method = "wilcox.test",comparisons = list(c("10_wk","20_wk"),c("10_wk","2_yr"),c("20_wk","2_yr")),tip.length = 0,size = 2,) +
+          theme_bw() +
+        scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) +
+          ggtitle("tethered Counts at Baseline") + facet_wrap(~gene,scales = "free_y",nrow = 4) + theme(axis.text.x = element_blank())
+dev.off()
+
+jpeg("baseline_comps_NO_stats.jpeg",12,8,units = "in",res = 700)
+ggplot(subset(mock,Class=="endogenous"),aes(age,ratio_goi_to_tether,fill = age)) +
+          geom_boxplot(outlier.alpha = 0) +
+          geom_jitter(width = 0.1,height = 0,alpha = 0.3,size = 1)  +
+          theme_bw() +
+        scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) +
+          ggtitle("tethered Counts at Baseline") + facet_wrap(~gene,scales = "free_y",nrow = 4) + theme(axis.text.x = element_blank())
+dev.off()
+```
+
+```{r}
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+for (i in unique(mock$gene)) {
+svglite(paste(i,"baseline_comparisons_by_age_wilcox_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(mock,gene==i),aes(age,ratio_goi_to_tether,fill = age)) +
+          geom_boxplot(outlier.alpha = 0) +
+          geom_jitter(width = 0.1,alpha = 0.5,size = 2) +
+          stat_compare_means(method = "wilcox.test",comparisons = list(c("10_wk","20_wk"),c("10_wk","2_yr"),c("20_wk","2_yr"))) +
+          theme_minimal() +
+        scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) +
+          ggtitle(paste(i,"tethered Counts at Baseline",sep = " ")))
+dev.off()
+}
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+for (i in unique(mock$gene)) {
+svglite(paste(i,"baseline_comparisons_by_age_NO_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(mock,gene==i),aes(age,ratio_goi_to_tether,fill = age)) +
+          geom_boxplot(outlier.alpha = 0) +
+          geom_jitter(width = 0.1,alpha = 0.5,size = 2) +
+          theme_minimal() +
+        scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1,size = 15)) +
+          ggtitle(paste(i,"tethered Counts at Baseline",sep = " ")))
+dev.off()
+}
+
+```
+
+
+
+BOX PLOTS WITH DATA RELATIVE TO BASELINE/MOCK
+```{r}
+no_mock <- subset(ref_relative_data,treatment=="infected")
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+#SVG
+for (i in unique(mock$gene)) {
+svglite(paste(i,"Log2FC_over_age_matched_mock_wilcox_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(no_mock,gene == i),mapping = aes(age,log2fc,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.3,size = 3) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  stat_compare_means(method = "wilcox.test",comparisons = list(c("10_wk","20_wk"),c("10_wk","2_yr"),c("20_wk","2_yr")),tip.length = 0) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+  ggtitle(paste("Log2FC over age-matched mock for",i,sep = " ")))
+dev.off()
+}
+
+for (i in unique(mock$gene)) {
+svglite(paste(i,"Log2FC_over_age_matched_mock_NO_stats_shown.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(no_mock,gene == i),mapping = aes(age,log2fc,fill = age)) + 
+  geom_boxplot(alpha = 0.5,outlier.alpha = 0) +
+  geom_jitter(width = 0.3,size = 3) + 
+  theme_minimal() + 
+  scale_fill_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  scale_color_viridis() +
+  facet_grid(~timepoint) +
+  ggtitle(paste("Log2FC over age-matched mock for",i,sep = " ")))
+dev.off()
+}
+
+
+```
+
+LINE PLOTS WITH DATA RELATIVE TO BASELINE/MOCK
+```{r}
+no_mock_numerical <- subset(ref_relative_data,timepoint!="control")
+no_mock_numerical$timepoint <- gsub("dpi","",no_mock_numerical$timepoint)
+no_mock_numerical$timepoint <- as.numeric(no_mock_numerical$timepoint)
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+for (i in unique(no_mock_numerical$gene)) {
+svglite(paste(i,"lineplot_Log2FC_over_age_matched_mock.svg",sep = "_"), width = 1080/res, height = 720/res)
+print(ggplot(subset(no_mock_numerical,gene == i),mapping = aes(timepoint,log2fc,color = age)) + 
+  geom_point(alpha = 0.2) + 
+  theme_minimal() + 
+  geom_smooth(aes(y = log2fc,group=age), fun=mean,alpha = 0.0,size = 2) +
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  ggtitle(paste("Log2FC Infected vs Mock for ",i,sep = " ")))
+dev.off()
+}
+
+
+
+
+
+#SORT BY MAX LOG2FC for faceted plot
+gene_order <- ref_relative_data %>% group_by(gene) %>% top_n(n = 1,wt = log2fc) %>% arrange(desc(log2fc))
+gene_order <- gene_order$gene
+
+no_mock_numerical$gene <- factor(no_mock_numerical$gene,levels = gene_order)
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+svglite("all_genes_faceted_lineplot_Log2FC_over_age_matched_mock.svg", width = 1080/res, height = 720/res)
+ggplot(subset(no_mock_numerical,Class=="endogenous"),mapping = aes(timepoint,log2fc,color = age)) + 
+  geom_point(alpha = 0.2) + 
+  theme_minimal() + 
+  geom_smooth(aes(y = log2fc,group=age),alpha = 0.0) +
+  scale_color_manual(values = c("#23cddd","#008042","#ff3f69")) +
+  ggtitle("Log2FC over age-matched controls") + facet_wrap(~gene,nrow = 4) + scale_x_continuous(breaks = c(2,4,7))
+dev.off()
+
+
+```
+
+
+
+HEATMAP
+```{r}
+library(pheatmap)
+heatmap_df <- subset(no_mock_numerical,Class=="endogenous")
+heatmap_df <- heatmap_df[,c(1,2,29)]
+heatmap_df <- dcast(heatmap_df,sample_name~gene)
+rownames(heatmap_df) <- heatmap_df$sample_name
+heatmap_df <-heatmap_df[,-1]
+
+
+colors = unique(c(seq(0,7,length=100)))
+my_palette <- viridis(n = 99,option = "D",direction = 1)
+
+heatmap.2( t(as.matrix(heatmap_df)),
+          breaks = colors,
+          symbreaks = FALSE,
+          col =my_palette,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          #margins = c(5,10),
+          #cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "none",
+          Rowv = gene_order,
+          Colv=FALSE,  
+          )
+```
+
+```{r}
+heatmap_df <- subset(ref_relative_data,Class=="endogenous")
+heatmap_df <- heatmap_df[,c(2,7,9,31)]
+heatmap_df <- subset(heatmap_df,timepoint!="control")
+
+
+
+heatmap_df <- heatmap_df %>% 
+  nest(data = -c(gene,age,timepoint)) %>%
+  mutate(
+    avg_log2fc = map(.x = data, .f = ~mean(.x$log2fc)))
+
+
+heatmap_df$columns <- paste(heatmap_df$age,heatmap_df$timepoint,sep = "_")
+
+heatmap_df <- heatmap_df[,c(1,6,5)]
+heatmap_df <- dcast(data = heatmap_df,formula = columns ~ gene)
+rownames <- heatmap_df$columns
+heatmap_df <-heatmap_df[,-1] 
+
+heatmap_df <- apply(heatmap_df, 2, function(x) as.numeric(as.character(x)))
+
+rownames(heatmap_df) <- rownames
+
+heatmap_df <- heatmap_df[c(1,2,3,7,8,9,4,5,6),]
+
+colors = unique(c(seq(0,8,length=100)))
+library(viridis)
+my_palette <- viridis::viridis(n = 99,option = "A",direction = 1)
+
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript")
+svglite("heatmap_magma_Log2FC_over_age_matched_mock.svg", width = 720/res, height = 1080/res)
+
+my_palette <- viridis::viridis(n = 99,option = "A",direction = 1)
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = colors,
+          symbreaks = FALSE,
+          col =my_palette,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+dev.off()
+```
+
+```{r}
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+#jpeg("heatmap_viridis_Log2FC_over_age_matched_mock.jpeg", width = 5, height = 1080/res)
+
+
+colors = unique(c(seq(0,10,length=9)))
+my_palette <- viridis::viridis(n = 8,option = "D",direction = 1,alpha = 0.75)
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = colors,
+          symbreaks = FALSE,
+          col =my_palette,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+
+
+colors = unique(c(seq(0,10,length=11)))
+colors
+
+my_bigger_palette <- c("#2f0027","#46457e","#365C8D","#277F8E","#1FA187","#4AC16D","#9FDA3A","#d9df3e","#FDE725")
+
+## Add an alpha value to a colour
+add.alpha <- function(col, alpha=1){
+  if(missing(col))
+    stop("Please provide a vector of colours.")
+  apply(sapply(col, col2rgb)/255, 2, 
+                     function(x) 
+                       rgb(x[1], x[2], x[3], alpha=alpha))  
+}
+
+my_alpha <- add.alpha(my_bigger_palette,alpha = 1)
+
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = colors,
+          symbreaks = FALSE,
+          col =my_alpha,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+#dev.off()
+
+
+#98e376
+
+colors.1 <- c("#19132f","#32647d","#32a57e","#33ee97","#b4ffc6","#ffe685","#ec8165","#ff4e52")
+colors.2 <- c("#19132f","#32647d","#32a57e","#33ee97","#98e376","#ffe65e","#ec8165","#ff4e52")
+colors.3 <- c("#191321","#436e8e","#32a57e","#33e38f","#ffe685","#ffa273","#ff4e52","#ff1649")
+colors.4 <- c("#191321","#38314e","#32647d","#32a57e","#33e38f","#ffe685","#ffa273","#ff4e52","#ff1649")
+breaks.4 <- c(0,1,2.222,3.333,4.444,5.556,6.667,7.778,8.889,10)
+
+
+breaks = unique(c(seq(1,10,length=8)))
+breaks <- c(0,1,2.285714,3.571429,4.857143,6.142857,7.428571,8.714286,10.000000)
+
+
+
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = breaks,
+          symbreaks = FALSE,
+          col = colors.1,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+
+
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = breaks,
+          symbreaks = FALSE,
+          col = colors.3,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = breaks.4,
+          symbreaks = FALSE,
+          col = colors.4,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+
+
+setwd("~/madkv20/full_data_set_analysis/files_for_manuscript/Figure_dump_2/")
+jpeg("heatmap_viridis_Log2FC_over_age_matched_mock.jpeg", width = 5, height = 8,units = "in",res = 700)
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = breaks,
+          symbreaks = FALSE,
+          col = colors.3,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+dev.off()
+
+```
+
+```{r}
+my_palette <- viridis::viridis(n = 99,option = "D",direction = 1)
+desat <- function(cols, sat=0.5) {
+     X <- diag(c(1, sat, 1)) %*% rgb2hsv(col2rgb(cols))
+     hsv(X[1,], X[2,], X[3,])
+ }
+
+my_desat <- desat(my_palette,sat = 0.75)
+
+heatmap.2(t(as.matrix(heatmap_df)),
+          breaks = colors,
+          symbreaks = FALSE,
+          col =my_desat,
+          trace = "none",
+          #keysize = 0.2,
+          #key.par = list(cex=0.5),
+          density.info = "none",
+          colsep = c(1:65),
+          rowsep = c(1:55),
+          margins = c(8,10),
+          cexRow = 0.7,
+          #cexCol = 1,
+          #colRow = cutree(as.hclust( hm$rowDendrogram ),h=2),
+          dendrogram = "row",
+          #Rowv = gene_order,
+          Colv=FALSE,  
+          )
+
+```
+
